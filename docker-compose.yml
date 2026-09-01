@@ -1,0 +1,46 @@
+# Dealbreaker full stack: Postgres + FastAPI backend + nginx-served React frontend.
+#
+# Local:   ADMIN_TOKEN=devtoken docker compose up --build   → http://localhost:8090
+# Coolify: deploy this compose; set ADMIN_TOKEN, POSTGRES_PASSWORD, NTFY_URL, and the
+#          app domain (dealbreaker.apps.predaccure.com) on the `frontend` service.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dealbreaker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dealbreaker}
+      POSTGRES_DB: dealbreaker
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dealbreaker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://dealbreaker:${POSTGRES_PASSWORD:-dealbreaker}@db:5432/dealbreaker
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+      SCRAPE_INTERVAL_MINUTES: ${SCRAPE_INTERVAL_MINUTES:-180}
+      NTFY_URL: ${NTFY_URL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    # Coolify: assign the app domain to this service (port 80) in the UI.
+    # Local: browse http://localhost:8090
+    ports:
+      - "${FRONTEND_PORT:-8090}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:
