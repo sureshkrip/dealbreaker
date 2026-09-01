@@ -297,10 +297,35 @@ def extract(html: str, strategy: dict | None = None) -> ScrapeResult:
     return result
 
 
+# A full, realistic Chrome header set. Many retailers (e.g. Akamai-protected sites like
+# Brooks/Salesforce Commerce Cloud) return 403 to clients that send only a User-Agent;
+# sending the complete set a real browser sends gets past header-based bot detection.
+def _browser_headers() -> dict[str, str]:
+    return {
+        "User-Agent": settings.user_agent,
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+    }
+
+
 async def fetch_html(url: str) -> str:
-    headers = {"User-Agent": settings.user_agent, "Accept-Language": "en-US,en;q=0.9"}
     async with httpx.AsyncClient(
-        timeout=settings.request_timeout_seconds, follow_redirects=True, headers=headers
+        timeout=settings.request_timeout_seconds,
+        follow_redirects=True,
+        headers=_browser_headers(),
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
