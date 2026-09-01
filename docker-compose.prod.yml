@@ -1,0 +1,44 @@
+# Production stack for Dealbreaker, deployed on the Coolify host via SSH and routed by
+# Coolify's Traefik proxy. The database is the Coolify-managed shared Postgres 17
+# (reached over the external `coolify` network); there is no bundled db service here.
+#
+# Secrets live in .env.prod on the server (gitignored): ADMIN_TOKEN, NTFY_URL,
+# DATABASE_URL=postgresql+psycopg://dealbreaker:***@<managed-pg-host>:5432/dealbreaker
+#
+# Deploy / redeploy:
+#   cd /opt/dealbreaker && git pull && \
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+services:
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      SCRAPE_INTERVAL_MINUTES: ${SCRAPE_INTERVAL_MINUTES:-180}
+      NTFY_URL: ${NTFY_URL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    networks: [internal, coolify]
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    networks: [internal, coolify]
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.dealbreaker.rule=Host(`dealbreaker.apps.predaccure.com`)
+      - traefik.http.routers.dealbreaker.entrypoints=https
+      - traefik.http.routers.dealbreaker.tls=true
+      - traefik.http.routers.dealbreaker.tls.certresolver=letsencrypt
+      - traefik.http.services.dealbreaker.loadbalancer.server.port=80
+      - traefik.http.routers.dealbreaker-http.rule=Host(`dealbreaker.apps.predaccure.com`)
+      - traefik.http.routers.dealbreaker-http.entrypoints=http
+      - traefik.http.routers.dealbreaker-http.middlewares=dealbreaker-redir
+      - traefik.http.middlewares.dealbreaker-redir.redirectscheme.scheme=https
+
+networks:
+  internal:
+  coolify:
+    external: true

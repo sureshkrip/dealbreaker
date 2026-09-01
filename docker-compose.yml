@@ -1,8 +1,10 @@
-# Dealbreaker full stack: Postgres + FastAPI backend + nginx-served React frontend.
+# Dealbreaker full stack for LOCAL DEV: bundled Postgres + FastAPI backend +
+# nginx-served React frontend.
 #
-# Local:   ADMIN_TOKEN=devtoken docker compose up --build   → http://localhost:8090
-# Coolify: deploy this compose; set ADMIN_TOKEN, POSTGRES_PASSWORD, NTFY_URL, and the
-#          app domain (dealbreaker.apps.predaccure.com) on the `frontend` service.
+#   ADMIN_TOKEN=devtoken docker compose up --build   → http://localhost:8090
+#
+# Production uses docker-compose.prod.yml instead, which drops this bundled Postgres
+# and connects to the Coolify-managed Postgres 17 over the external `coolify` network.
 services:
   db:
     image: postgres:16-alpine
