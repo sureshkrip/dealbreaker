@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/pages/addproduct.tsx","./src/pages/dashboard.tsx","./src/pages/productdetail.tsx","./src/pages/storeeditor.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/pages/addproduct.tsx","./src/pages/dashboard.tsx","./src/pages/livedeals.tsx","./src/pages/productdetail.tsx","./src/pages/storeeditor.tsx"],"version":"5.9.3"}

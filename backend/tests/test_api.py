@@ -110,3 +110,40 @@ def test_target_notification_marks_notified(client, monkeypatch):
 
     assert len(sent) == 1
     assert "Test Product" in sent[0][1]
+
+
+def test_create_product_by_name_and_manual_price(client):
+    r = client.post(
+        "/api/products",
+        json={
+            "title": "Sony WH-1000XM5",
+            "search_query": "Sony WH-1000XM5",
+            "notify_price": 250.0,
+        },
+    )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["title"] == "Sony WH-1000XM5"
+    assert data["search_query"] == "Sony WH-1000XM5"
+    assert data["notify_price"] == 250.0
+
+
+def test_price_stats_and_manual_price_update(client):
+    pid = client.post(
+        "/api/products",
+        json={"url": "https://shop.example/item", "notify_price": 75.0},
+    ).json()["id"]
+    url_id = client.get(f"/api/products/{pid}").json()["urls"][0]["id"]
+
+    # Record a lower manual price
+    r = client.post(f"/api/products/urls/{url_id}/price", json={"price": 70.0})
+    assert r.status_code == 200
+    assert r.json()["latest_price"] == 70.0
+
+    prod = client.get(f"/api/products/{pid}").json()
+    assert prod["best_price"] == 70.0
+    assert prod["lowest_price"] == 70.0
+    assert prod["highest_price"] == 100.0
+    assert prod["price_change"] == -30.0
+    assert prod["price_change_percent"] == -30.0
+    assert prod["target_hit"] is True

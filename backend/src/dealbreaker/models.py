@@ -50,6 +50,9 @@ class Product(SQLModel, table=True):
     title: str
     image: str | None = None
     favourite: bool = True
+    # Optional keyword query to monitor deal feeds (e.g. Slickdeals) for this product.
+    search_query: str | None = None
+    category: str | None = None
     # Notify when any listing drops to/below this absolute price.
     notify_price: float | None = None
     # Notify on a percentage drop from the highest recorded price.
@@ -71,6 +74,7 @@ class Url(SQLModel, table=True):
     product_id: int = Field(foreign_key="products.id", index=True)
     store_id: int = Field(foreign_key="stores.id", index=True)
     availability: StockStatus = Field(default=StockStatus.unknown)
+    last_error: str | None = None
     last_scraped_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
 

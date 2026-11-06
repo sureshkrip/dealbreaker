@@ -7,8 +7,9 @@ from sqlmodel import Session, select
 
 from ..auth import require_token
 from ..db import get_session
-from ..models import Store
-from ..schemas import StoreOut, StoreUpdate
+from ..models import StockStatus, Store
+from ..schemas import StoreOut, StoreTestRequest, StoreUpdate, UrlPreviewOut
+from ..scraper import scrape
 
 router = APIRouter(prefix="/api/stores", tags=["stores"], dependencies=[Depends(require_token)])
 
@@ -39,3 +40,37 @@ def update_store(
     session.commit()
     session.refresh(store)
     return store
+
+
+@router.post("/{store_id}/test", response_model=UrlPreviewOut)
+async def test_store_strategy(
+    store_id: int, body: StoreTestRequest, session: Session = Depends(get_session)
+) -> UrlPreviewOut:
+    """Test a store's scrape strategy against a sample URL without saving."""
+    store = session.get(Store, store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    strategy = (
+        body.scrape_strategy if body.scrape_strategy is not None else (store.scrape_strategy or {})
+    )
+    try:
+        result = await scrape(body.url.strip(), strategy)
+        return UrlPreviewOut(
+            url=body.url.strip(),
+            title=result.title,
+            price=result.price,
+            image=result.image,
+            availability=result.availability,
+            store_name=store.name,
+            error=None if result.price is not None else "No price matched with this strategy.",
+        )
+    except Exception as exc:
+        return UrlPreviewOut(
+            url=body.url.strip(),
+            title=None,
+            price=None,
+            image=None,
+            availability=StockStatus.unknown,
+            store_name=store.name,
+            error=f"Scrape failed: {exc}",
+        )

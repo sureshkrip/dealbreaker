@@ -18,6 +18,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from selectolax.parser import HTMLParser
@@ -144,8 +145,27 @@ def _first_product_node(tree: HTMLParser) -> dict | None:
 def _offer_of(node: dict) -> dict:
     offers = node.get("offers")
     if isinstance(offers, list) and offers:
+        for item in offers:
+            if isinstance(item, dict) and (
+                item.get("price") or item.get("lowPrice") or item.get("priceSpecification")
+            ):
+                return item
         offers = offers[0]
     return offers if isinstance(offers, dict) else {}
+
+
+def _extract_offer_price(offer: dict) -> float | None:
+    raw = offer.get("price") or offer.get("lowPrice") or offer.get("highPrice")
+    if raw is not None:
+        parsed = parse_price(raw)
+        if parsed is not None:
+            return parsed
+    spec = offer.get("priceSpecification")
+    if isinstance(spec, list) and spec:
+        spec = spec[0]
+    if isinstance(spec, dict):
+        return parse_price(spec.get("price") or spec.get("minPrice"))
+    return None
 
 
 def _dig(node: dict, path: str) -> Any:
@@ -179,29 +199,60 @@ def schema_org_fallback(tree: HTMLParser) -> ScrapeResult:
     if node:
         offer = _offer_of(node)
         result.title = clean_title(node.get("name"))
-        result.price = parse_price(offer.get("price") or offer.get("lowPrice"))
+        result.price = _extract_offer_price(offer)
         img = node.get("image")
         if isinstance(img, list):
             img = img[0] if img else None
         if isinstance(img, dict):
-            img = img.get("url")
+            img = img.get("url") or img.get("contentUrl")
         result.image = img
         result.availability = map_availability(offer.get("availability"))
 
-    # OpenGraph / meta fallback for anything still missing.
+    # OpenGraph / meta / microdata fallback for anything still missing.
     if not result.title:
-        result.title = clean_title(_meta(tree, "og:title", "twitter:title")) or clean_title(
-            tree.css_first("title").text() if tree.css_first("title") else None
+        result.title = (
+            clean_title(_meta(tree, "og:title", "twitter:title"))
+            or clean_title(
+                _apply_selector(
+                    tree,
+                    "h1#productTitle, h1[itemprop='name'], h1.product-title, h1",
+                )
+            )
+            or clean_title(tree.css_first("title").text() if tree.css_first("title") else None)
         )
     if result.price is None:
         result.price = parse_price(
-            _meta(tree, "og:price:amount", "product:price:amount", "twitter:data1")
+            _meta(
+                tree,
+                "og:price:amount",
+                "product:price:amount",
+                "price",
+                "twitter:data1",
+            )
         )
+    if result.price is None:
+        # Microdata & common retail price selectors
+        micro_price = _apply_selector(
+            tree,
+            (
+                "[itemprop='price']|content, [itemprop='price'], [data-price]|data-price, "
+                ".a-price .a-offscreen, .product-price, .sale-price, .current-price, .price"
+            ),
+        )
+        result.price = parse_price(micro_price)
     if not result.image:
-        result.image = _meta(tree, "og:image", "twitter:image")
+        result.image = _meta(tree, "og:image", "twitter:image") or _apply_selector(
+            tree,
+            (
+                "#landingImage|src, [itemprop='image']|src, "
+                "[itemprop='image']|content, img#main-image|src"
+            ),
+        )
     if result.availability == StockStatus.unknown:
+        avail_sel = "[itemprop='availability']|href, [itemprop='availability']|content"
         result.availability = map_availability(
             _meta(tree, "og:availability", "product:availability")
+            or _apply_selector(tree, avail_sel)
         )
     return result
 
@@ -210,14 +261,17 @@ def schema_org_fallback(tree: HTMLParser) -> ScrapeResult:
 # Per-field strategy application
 # --------------------------------------------------------------------------- #
 
-def _apply_selector(tree: HTMLParser, value: str) -> str | None:
+def _apply_single_selector(tree: HTMLParser, value: str) -> str | None:
     raw_html = value.startswith("!")
     selector = value[1:] if raw_html else value
     attr = None
     if "|" in selector:
         selector, attr = selector.rsplit("|", 1)
         selector, attr = selector.strip(), attr.strip()
-    node = tree.css_first(selector.strip())
+    try:
+        node = tree.css_first(selector.strip())
+    except Exception:
+        return None
     if not node:
         return None
     if attr:
@@ -225,6 +279,18 @@ def _apply_selector(tree: HTMLParser, value: str) -> str | None:
     if raw_html:
         return node.html
     return node.text(strip=True) or None
+
+
+def _apply_selector(tree: HTMLParser, value: str) -> str | None:
+    """Apply a CSS selector (or comma-separated list of fallback selectors)."""
+    for candidate in value.split(","):
+        cand = candidate.strip()
+        if not cand:
+            continue
+        out = _apply_single_selector(tree, cand)
+        if out:
+            return out
+    return None
 
 
 def _apply_regex(html: str, value: str) -> str | None:
@@ -334,4 +400,7 @@ async def fetch_html(url: str) -> str:
 
 async def scrape(url: str, strategy: dict | None = None) -> ScrapeResult:
     html = await fetch_html(url)
-    return extract(html, strategy)
+    result = extract(html, strategy)
+    if result.image and not result.image.startswith(("http://", "https://", "data:")):
+        result.image = urljoin(url, result.image)
+    return result

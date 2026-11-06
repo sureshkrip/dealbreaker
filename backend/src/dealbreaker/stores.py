@@ -18,9 +18,16 @@ DEFAULT_STORES: list[dict] = [
         "initials": "AZ",
         "domains": ["amazon.com", "amazon.com.au", "amazon.co.uk", "amazon.de", "amazon.ca"],
         "scrape_strategy": {
-            "title": {"type": "selector", "value": "#productTitle"},
-            "price": {"type": "selector", "value": ".a-price .a-offscreen"},
-            "image": {"type": "selector", "value": "#landingImage|src"},
+            "title": {"type": "selector", "value": "#productTitle, #title"},
+            "price": {
+                "type": "selector",
+                "value": (
+                    ".apexPriceToPay .a-offscreen, "
+                    "#corePriceDisplay_desktop_feature_div .a-offscreen, "
+                    ".a-price .a-offscreen, #priceblock_ourprice, #priceblock_dealprice"
+                ),
+            },
+            "image": {"type": "selector", "value": "#landingImage|src, #imgBlkFront|src"},
         },
     },
     {
@@ -28,16 +35,94 @@ DEFAULT_STORES: list[dict] = [
         "slug": "ebay",
         "initials": "EB",
         "domains": ["ebay.com", "ebay.com.au", "ebay.co.uk"],
-        "scrape_strategy": {},  # schema.org fallback handles eBay well
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": "h1.x-item-title__mainTitle"},
+            "price": {"type": "selector", "value": ".x-price-primary span.ux-textspans"},
+        },
     },
     {
         "name": "Best Buy",
         "slug": "bestbuy",
         "initials": "BB",
         "domains": ["bestbuy.com"],
-        "scrape_strategy": {},
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": ".sku-title h1, h1"},
+            "price": {
+                "type": "selector",
+                "value": (
+                    ".priceView-hero-price span[aria-hidden='true'], "
+                    "[data-testid='customer-price'] span"
+                ),
+            },
+        },
+    },
+    {
+        "name": "Walmart",
+        "slug": "walmart",
+        "initials": "WM",
+        "domains": ["walmart.com"],
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": "h1#main-title, h1[itemprop='name']"},
+            "price": {
+                "type": "selector",
+                "value": "[itemprop='price'], span[data-automation-id='product-price']",
+            },
+        },
+    },
+    {
+        "name": "Target",
+        "slug": "target",
+        "initials": "TG",
+        "domains": ["target.com"],
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": "h1[data-test='product-title'], h1"},
+            "price": {"type": "selector", "value": "[data-test='product-price']"},
+        },
+    },
+    {
+        "name": "Newegg",
+        "slug": "newegg",
+        "initials": "NE",
+        "domains": ["newegg.com"],
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": "h1.product-title"},
+            "price": {"type": "selector", "value": ".price-current"},
+        },
+    },
+    {
+        "name": "B&H Photo",
+        "slug": "bhphoto",
+        "initials": "BH",
+        "domains": ["bhphotovideo.com"],
+        "scrape_strategy": {
+            "title": {"type": "selector", "value": "h1[data-selenium='productTitle']"},
+            "price": {"type": "selector", "value": "[data-selenium='pricingPrice']"},
+        },
     },
 ]
+
+
+def fallback_title_from_url(url: str) -> str | None:
+    """Derive a human-readable product title from a URL slug when scraping is blocked."""
+    parsed = urlparse(url)
+    parts = [p for p in (parsed.path or "").split("/") if p]
+    # Filter out generic segments like 'dp', 'gp', 'product', 'p', 'ip', pure IDs/numbers
+    candidates: list[str] = []
+    skip_words = {"dp", "gp", "product", "products", "item", "items", "p", "ip", "site", "d"}
+    for part in parts:
+        clean = re.sub(r"\.(html?|php|aspx?)$", "", part, flags=re.IGNORECASE)
+        if clean.lower() in skip_words:
+            continue
+        # Skip pure ASINs or numeric IDs like B09XS7JWHH or 12345678
+        if re.fullmatch(r"[A-Z0-9]{8,14}", clean) or re.fullmatch(r"\d+", clean):
+            continue
+        if "-" in clean or "_" in clean or len(clean) >= 6:
+            candidates.append(clean)
+    if not candidates:
+        return None
+    best = max(candidates, key=len)
+    words = re.sub(r"[-_+]+", " ", best).strip()
+    return words.title() if len(words) >= 3 else None
 
 
 def bare_domain(url: str) -> str:
