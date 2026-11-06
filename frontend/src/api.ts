@@ -97,6 +97,8 @@ export const api = {
     }),
   deleteProduct: (id: number) =>
     request<void>(`/products/${id}`, { method: "DELETE" }),
+  refreshProduct: (id: number) =>
+    request<ProductOut>(`/products/${id}/refresh`, { method: "POST" }),
   productPrices: (id: number) =>
     request<Record<string, PricePoint[]>>(`/products/${id}/prices`),
   productDeals: (id: number) =>

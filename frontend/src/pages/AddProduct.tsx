@@ -81,9 +81,6 @@ export default function AddProduct() {
   }
 
   function selectDealMatch(d: DealOut) {
-    setTitle(d.title);
-    setSearchQuery(d.title.split(" ").slice(0, 5).join(" "));
-    setUrl(d.url);
     if (d.image) setImage(d.image);
     if (d.price != null) {
       setInitialPrice(String(d.price));
@@ -98,7 +95,7 @@ export default function AddProduct() {
     setError("");
     try {
       const product = await api.addProduct({
-        url: url.trim() || null,
+        url: entryMode === "url" ? url.trim() || null : null,
         title: title.trim() || null,
         search_query: (searchQuery.trim() || title.trim()) || null,
         category: category || null,
@@ -119,11 +116,11 @@ export default function AddProduct() {
     <>
       <div className="hero-banner">
         <div>
-          <h1>🎯 Track a New Product You Want to Buy</h1>
+          <h1>🎯 Track a Product Across All Stores</h1>
           <p>
-            Enter the product name to scan live Slickdeals posts &amp; set a Deal Alert, or
-            paste a direct store URL (Amazon, Best Buy, Walmart, Target, eBay) to monitor
-            its price history.
+            Just enter the product name — <strong>no store or URL required!</strong>{" "}
+            Dealbreaker automatically finds and monitors prices across Amazon, Best Buy,
+            Walmart, Costco, Target, eBay &amp; more.
           </p>
         </div>
         <div className="pill-tabs">
@@ -132,14 +129,14 @@ export default function AddProduct() {
             className={`pill-tab ${entryMode === "name" ? "active" : ""}`}
             onClick={() => setEntryMode("name")}
           >
-            🔍 By Product Name (Slickdeals Mode)
+            🔍 By Product Name (All Stores)
           </button>
           <button
             type="button"
             className={`pill-tab ${entryMode === "url" ? "active" : ""}`}
             onClick={() => setEntryMode("url")}
           >
-            🔗 By Store URL (Direct Scraper)
+            🔗 Single Store URL (Optional)
           </button>
         </div>
       </div>
@@ -155,8 +152,8 @@ export default function AddProduct() {
                   setTitle(e.target.value);
                   setSearchQuery(e.target.value);
                 }}
-                placeholder="e.g. Sony WH-1000XM5 Headphones, MacBook Air M3, LG C4 65 OLED…"
-                required={!url}
+                placeholder="e.g. Apple AirPods Pro, Sony WH-1000XM5, MacBook Air M3, LG C4 OLED…"
+                required
               />
               <button
                 type="button"
@@ -165,12 +162,13 @@ export default function AddProduct() {
                 onClick={handleSearchDeals}
                 style={{ flexShrink: 0 }}
               >
-                {searchingDeals ? "Searching…" : "🔥 Check Live Deals"}
+                {searchingDeals ? "Scanning Stores…" : "🔥 Preview Current Store Prices"}
               </button>
             </div>
             <p className="muted" style={{ marginTop: 6 }}>
-              Tip: Click <strong>Check Live Deals</strong> to see if Slickdeals already has a
-              sale or coupon code right now, or fill out your target price below to watch it!
+              ✨ <strong>Monitors all stores automatically:</strong> We'll scan Amazon,
+              Best Buy, Walmart, Costco, Target, eBay &amp; Slickdeals for "{title || "your product"}"
+              and track the lowest price across every retailer.
             </p>
           </div>
         ) : (
@@ -341,16 +339,6 @@ export default function AddProduct() {
               />
             </div>
           )}
-          {entryMode === "name" && (
-            <div>
-              <label>Store URL (optional — can add anytime)</label>
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://store.example/product (optional)"
-              />
-            </div>
-          )}
           <div>
             <label>Category</label>
             <select value={category} onChange={(e) => setCategory(e.target.value)}>
@@ -451,7 +439,11 @@ export default function AddProduct() {
 
         <div className="row" style={{ marginTop: 20, gap: 12 }}>
           <button type="submit" disabled={busy || (!url.trim() && !title.trim())}>
-            {busy ? "Starting Price Monitor…" : "🚀 Start Monitoring Price"}
+            {busy
+              ? "Scanning Stores & Starting Monitor…"
+              : entryMode === "name"
+                ? "🚀 Monitor Across All Stores"
+                : "🚀 Start Monitoring Price"}
           </button>
           <button type="button" className="secondary" onClick={() => nav("/")}>
             Cancel

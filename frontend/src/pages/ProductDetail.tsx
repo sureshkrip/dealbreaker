@@ -121,6 +121,19 @@ export default function ProductDetail() {
     }
   }
 
+  async function scanAllStores() {
+    setBusy(true);
+    try {
+      await api.refreshProduct(pid);
+      await load();
+      loadLiveDeals();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveTargetSettings(e: React.FormEvent) {
     e.preventDefault();
     if (!product) return;
@@ -222,6 +235,14 @@ export default function ProductDetail() {
           )}
         </div>
         <div className="row">
+          <button
+            type="button"
+            className="sm"
+            disabled={busy}
+            onClick={scanAllStores}
+          >
+            {busy ? "🔄 Scanning Stores…" : "🔄 Scan All Stores Now"}
+          </button>
           <button
             type="button"
             className="secondary sm"

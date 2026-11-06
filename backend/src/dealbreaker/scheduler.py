@@ -9,23 +9,34 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .db import engine
-from .models import Url
-from .services import refresh_url
+from .models import Product, Url
+from .services import refresh_url, sync_product_deals
 
 log = logging.getLogger("dealbreaker.scheduler")
 _scheduler: AsyncIOScheduler | None = None
 
 
 async def refresh_all() -> int:
-    """Re-scrape all URLs. Returns the number of new price rows stored."""
+    """Re-scrape all direct URLs and scan all stores for every tracked product."""
     stored = 0
     with Session(engine) as session:
+        products = session.exec(select(Product)).all()
+        for product in products:
+            stored += await sync_product_deals(session, product)
+
         urls = session.exec(select(Url)).all()
         for url in urls:
+            if "slickdeals.net" in (url.url or ""):
+                continue
             price = await refresh_url(session, url)
             if price is not None:
                 stored += 1
-    log.info("scheduled refresh complete: %d new prices from %d urls", stored, len(urls))
+    log.info(
+        "scheduled refresh complete: %d new prices across %d products / %d urls",
+        stored,
+        len(products),
+        len(urls),
+    )
     return stored
 
 

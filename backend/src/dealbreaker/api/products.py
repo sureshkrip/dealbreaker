@@ -23,8 +23,8 @@ from ..schemas import (
     UrlPreviewRequest,
 )
 from ..scraper import ScrapeResult, scrape
-from ..services import _evaluate_targets, compute_product_stats, refresh_url
-from ..stores import fallback_title_from_url, resolve_store
+from ..services import _evaluate_targets, compute_product_stats, refresh_url, sync_product_deals
+from ..stores import fallback_title_from_url, resolve_store, resolve_store_by_name
 
 router = APIRouter(
     prefix="/api/products", tags=["products"], dependencies=[Depends(require_token)]
@@ -216,7 +216,47 @@ async def create_product(
 
         if scrape_error is None or result.price is not None:
             await refresh_url(session, url, pre_scraped=result)
+    else:
+        # Product added by name alone: automatically discover prices across all stores!
+        synced = await sync_product_deals(session, product)
+        if synced == 0 and body.initial_price is not None:
+            fallback_store = resolve_store_by_name(session, "Market Price")
+            baseline_url = Url(
+                url="https://slickdeals.net/",
+                product_id=product.id,
+                store_id=fallback_store.id,
+                availability=StockStatus.in_stock,
+                last_scraped_at=utcnow(),
+            )
+            session.add(baseline_url)
+            session.commit()
+            session.refresh(baseline_url)
+            session.add(
+                Price(
+                    price=body.initial_price,
+                    url_id=baseline_url.id,
+                    store_id=fallback_store.id,
+                )
+            )
+            session.commit()
+            _evaluate_targets(session, product.id)
 
+    session.refresh(product)
+    return _product_out(session, product)
+
+
+@router.post("/{product_id}/refresh", response_model=ProductOut)
+async def refresh_product_all_stores(
+    product_id: int, session: Session = Depends(get_session)
+) -> ProductOut:
+    """Scan all stores for live deals on this product and re-scrape any direct URLs."""
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    await sync_product_deals(session, product)
+    for u in list(product.urls):
+        if "slickdeals.net" not in (u.url or ""):
+            await refresh_url(session, u)
     session.refresh(product)
     return _product_out(session, product)
 

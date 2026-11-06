@@ -161,6 +161,28 @@ def resolve_store(session: Session, url: str) -> Store:
     return store
 
 
+def resolve_store_by_name(session: Session, store_name: str) -> Store:
+    """Return the Store matching a retailer name (e.g. 'Amazon'), creating one if needed."""
+    clean_name = (store_name or "Deal").strip()
+    slug = slugify(clean_name)
+    for store in session.exec(select(Store)).all():
+        if store.slug == slug or store.name.lower() == clean_name.lower():
+            return store
+
+    initials = "".join(w[0] for w in clean_name.split()[:2]).upper() or "DL"
+    store = Store(
+        name=clean_name,
+        slug=slug,
+        initials=initials,
+        domains=[],
+        scrape_strategy={},
+    )
+    session.add(store)
+    session.commit()
+    session.refresh(store)
+    return store
+
+
 def seed_default_stores(session: Session) -> int:
     created = 0
     existing_slugs = {s.slug for s in session.exec(select(Store)).all()}

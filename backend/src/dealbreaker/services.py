@@ -7,10 +7,87 @@ import logging
 from sqlmodel import Session, select
 
 from . import notify
+from .deals import fetch_slickdeals
 from .models import Price, Product, StockStatus, Url, utcnow
 from .scraper import ScrapeResult, scrape
+from .stores import resolve_store_by_name
 
 log = logging.getLogger("dealbreaker.services")
+
+
+async def sync_product_deals(session: Session, product: Product) -> int:
+    """Search across all stores/deals for this product by name and record store listings & prices.
+
+    Allows monitoring any product across Amazon, Best Buy, Walmart, Costco, Target, eBay, etc.
+    without requiring a manually entered store URL.
+    """
+    query = (product.search_query or product.title or "").strip()
+    if not query:
+        return 0
+    words = [w for w in query.split() if len(w) > 1]
+    short_query = " ".join(words[:5]) if len(words) > 5 else query
+
+    deals = await fetch_slickdeals(query=short_query, limit=20)
+    if not deals:
+        return 0
+
+    # Pick the lowest-priced active deal per store
+    best_by_store: dict[str, object] = {}
+    for d in deals:
+        if d.price is None or d.price <= 0:
+            continue
+        existing = best_by_store.get(d.store_name)
+        if existing is None or d.price < existing.price:
+            best_by_store[d.store_name] = d
+
+    stored_count = 0
+    existing_urls = session.exec(select(Url).where(Url.product_id == product.id)).all()
+
+    for store_name, deal in list(best_by_store.items())[:8]:
+        store = resolve_store_by_name(session, store_name)
+        # Find existing Slickdeals-backed URL for this store on this product, or create one
+        target_url = next(
+            (
+                u
+                for u in existing_urls
+                if u.store_id == store.id and "slickdeals.net" in (u.url or "")
+            ),
+            None,
+        )
+        if target_url is None:
+            target_url = Url(
+                url=deal.url,
+                product_id=product.id,
+                store_id=store.id,
+                availability=StockStatus.in_stock,
+                last_scraped_at=utcnow(),
+            )
+            session.add(target_url)
+            session.commit()
+            session.refresh(target_url)
+            existing_urls.append(target_url)
+        else:
+            target_url.url = deal.url
+            target_url.availability = StockStatus.in_stock
+            target_url.last_error = None
+            target_url.last_scraped_at = utcnow()
+            session.add(target_url)
+
+        if deal.image and not product.image:
+            product.image = deal.image
+            session.add(product)
+
+        last_price = _latest_price(session, target_url.id)
+        if last_price is None or last_price != deal.price:
+            session.add(
+                Price(price=deal.price, url_id=target_url.id, store_id=store.id)
+            )
+            stored_count += 1
+
+    session.commit()
+    if stored_count > 0:
+        _evaluate_targets(session, product.id)
+    return stored_count
 
 
 async def refresh_url(
@@ -20,6 +97,13 @@ async def refresh_url(
 
     Returns the new Price row, or None if nothing was stored (e.g. out of stock).
     """
+    if pre_scraped is None and "slickdeals.net" in (url.url or "") and url.product:
+        await sync_product_deals(session, url.product)
+        row = session.exec(
+            select(Price).where(Price.url_id == url.id).order_by(Price.created_at.desc())
+        ).first()
+        return row
+
     store = url.store
     if pre_scraped is not None:
         result = pre_scraped

@@ -1,9 +1,10 @@
-"""Live Deal Discovery Engine — Slickdeals RSS & Keyword Deal Scanner.
+"""Live Deal Discovery Engine — Multi-Store & Slickdeals Scanner.
 
-Allows Dealbreaker to work like Slickdeals:
-1. Browse Frontpage & Popular deals in real time.
-2. Search live community/staff deals by product name or keyword (e.g. "Sony WH-1000XM5").
-3. Automatically match tracked products against incoming deal feeds to spot coupon/promo drops.
+Allows Dealbreaker to monitor a product across all stores by product name alone
+(no store or URL required):
+1. Searches Slickdeals title-matched deals across Amazon, Best Buy, Walmart, Costco, etc.
+2. Filters out cheap accessory false-positives (cases, covers, cables, straps) unless requested.
+3. Automatically syncs store listings and price history for every tracked product.
 """
 
 from __future__ import annotations
@@ -22,43 +23,88 @@ from .scraper import _browser_headers, parse_price
 
 log = logging.getLogger("dealbreaker.deals")
 
-KNOWN_STORES = [
-    "Amazon",
-    "Best Buy",
-    "Walmart",
-    "Target",
-    "Costco",
-    "eBay",
-    "B&H Photo",
-    "B&H",
-    "Newegg",
-    "Home Depot",
-    "Lowe's",
-    "Woot",
+# Pure retailers (checked first so "Apple AirPods at Best Buy" resolves to "Best Buy", not "Apple").
+RETAIL_STORES: list[tuple[str, str]] = [
+    ("Amazon", "Amazon"),
+    ("Best Buy", "Best Buy"),
+    ("BestBuy", "Best Buy"),
+    ("Walmart", "Walmart"),
+    ("Target", "Target"),
+    ("Costco", "Costco"),
+    ("Sam's Club", "Sam's Club"),
+    ("Sams Club", "Sam's Club"),
+    ("eBay", "eBay"),
+    ("B&H Photo", "B&H Photo"),
+    ("B&H", "B&H Photo"),
+    ("Newegg", "Newegg"),
+    ("Home Depot", "Home Depot"),
+    ("Lowe's", "Lowe's"),
+    ("Lowes", "Lowe's"),
+    ("Woot", "Woot"),
+    ("Adorama", "Adorama"),
+    ("Micro Center", "Micro Center"),
+    ("Macy's", "Macy's"),
+    ("Kohl's", "Kohl's"),
+    ("REI", "REI"),
+    ("GameStop", "GameStop"),
+    ("Wayfair", "Wayfair"),
+    ("Staples", "Staples"),
+    ("Office Depot", "Office Depot"),
+    ("Monoprice", "Monoprice"),
+    ("Verizon", "Verizon"),
+    ("T-Mobile", "T-Mobile"),
+    ("AT&T", "AT&T"),
+]
+
+# Brand direct stores (matched when "at/via/from <Brand>" or if no retail store matched).
+BRAND_STORES = [
     "Samsung",
     "Dell",
     "Lenovo",
     "HP",
     "Apple",
-    "Adorama",
-    "Sam's Club",
-    "Macy's",
-    "Kohl's",
-    "REI",
-    "Nike",
-    "Adidas",
-    "GameStop",
-    "Micro Center",
-    "Wayfair",
-    "Staples",
-    "Office Depot",
-    "Monoprice",
-    "Anker",
     "Sony",
     "LG",
+    "Anker",
+    "Nike",
+    "Adidas",
+    "Garmin",
+    "Dyson",
+    "Bose",
+    "Sonos",
+    "Nintendo",
+    "PlayStation",
+    "Microsoft",
 ]
 
-_PRICE_RE = re.compile(r"\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)")
+ACCESSORY_KEYWORDS = {
+    "case",
+    "cover",
+    "protector",
+    "skin",
+    "strap",
+    "band",
+    "cable",
+    "cord",
+    "adapter",
+    "mount",
+    "holder",
+    "stand",
+    "sleeve",
+    "pouch",
+    "keychain",
+    "earpads",
+    "tips",
+}
+
+_ACCESSORY_PHRASE_RE = re.compile(
+    r"\b(?:case|cover|screen\s+protector|protector|skin|strap|band|mount|holder|sleeve|pouch|ear\s*tips|replacement)\s+(?:for|compatible\s+with|fits)\b",
+    re.IGNORECASE,
+)
+
+_PRICE_RE = re.compile(
+    r"\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"
+)
 _ORIG_PRICE_RE = re.compile(
     r"(?:reg\.?|regular|was|list(?:\s+price)?|msrp|orig\.?|normally)\s*:?\s*\$\s*([0-9,]+(?:\.[0-9]{1,2})?)",
     re.IGNORECASE,
@@ -86,9 +132,16 @@ class DealItem:
     source: str = "Slickdeals"
 
 
+def is_accessory_mismatch(query: str, deal_title: str) -> bool:
+    """Return True if deal_title is an accessory ('Case for X') when query didn't ask for one."""
+    q_words = set(re.findall(r"[a-z0-9]+", query.lower()))
+    if q_words & ACCESSORY_KEYWORDS:
+        return False
+    return bool(_ACCESSORY_PHRASE_RE.search(deal_title))
+
+
 def extract_deal_price(title: str, description_text: str = "") -> float | None:
     """Extract the primary deal price from a deal title or description."""
-    # Check for "$XX off" first so we don't confuse a discount amount with the final price
     cleaned_title = re.sub(
         r"\$\s*[0-9,]+(?:\.[0-9]{1,2})?\s*(?:off|rebate|gift\s*card|gc|savings)",
         "",
@@ -97,9 +150,7 @@ def extract_deal_price(title: str, description_text: str = "") -> float | None:
     )
     matches = _PRICE_RE.findall(cleaned_title)
     if matches:
-        # Usually the deal price is the first or last price in the headline
         return parse_price(matches[0])
-    # Fallback to description text
     desc_matches = _PRICE_RE.findall(description_text)
     if desc_matches:
         return parse_price(desc_matches[0])
@@ -121,27 +172,44 @@ def extract_original_price(
 
 def detect_store(title: str, description_text: str = "") -> str:
     """Detect the merchant/store name from a deal headline or body."""
-    for store in KNOWN_STORES:
-        pattern = r"\b" + re.escape(store) + r"\b"
-        if re.search(pattern, title, re.IGNORECASE):
-            return "B&H Photo" if store == "B&H" else store
-    # Check "at <Store>" or "via <Store>" in title
-    m = re.search(
-        r"\b(?:at|via|from)\s+([A-Z][A-Za-z0-9&'\s]{1,18}?)(?:\s*[-–|:(]|\s+for\s+\$|$)",
+    # 1. Explicit "at <Store>" / "via <Store>" / "from <Store>" / "[<Store>]" in title
+    m_explicit = re.search(
+        r"(?:\b(?:at|via|from)\s+|\[)([A-Z][A-Za-z0-9&'.\s]{1,18}?)(?:\]|\s*[-–|:(]|\s+for\s+\$|$)",
         title,
     )
-    if m:
-        candidate = m.group(1).strip()
-        if 2 <= len(candidate) <= 20:
-            return candidate
-    for store in KNOWN_STORES:
-        pattern = r"\b" + re.escape(store) + r"\b"
+    if m_explicit:
+        cand = m_explicit.group(1).strip()
+        for token, canonical in RETAIL_STORES:
+            if token.lower() in cand.lower():
+                return canonical
+        for brand in BRAND_STORES:
+            if brand.lower() == cand.lower():
+                return f"{brand} Store"
+
+    # 2. Check pure retail stores anywhere in the title
+    for token, canonical in RETAIL_STORES:
+        pattern = r"\b" + re.escape(token) + r"\b"
+        if re.search(pattern, title, re.IGNORECASE):
+            return canonical
+
+    # 3. Check pure retail stores in the description text
+    for token, canonical in RETAIL_STORES:
+        pattern = r"\b" + re.escape(token) + r"\b"
         if re.search(pattern, description_text, re.IGNORECASE):
-            return "B&H Photo" if store == "B&H" else store
+            return canonical
+
+    # 4. Fallback to brand store if mentioned in title
+    for brand in BRAND_STORES:
+        pattern = r"\b" + re.escape(brand) + r"\b"
+        if re.search(pattern, title, re.IGNORECASE):
+            return f"{brand} Direct"
+
     return "Multi-Store"
 
 
-def parse_slickdeals_rss(xml_text: str, is_frontpage: bool = False) -> list[DealItem]:
+def parse_slickdeals_rss(
+    xml_text: str, is_frontpage: bool = False, query: str | None = None
+) -> list[DealItem]:
     """Parse Slickdeals RSS XML into structured DealItem objects."""
     try:
         root = ET.fromstring(xml_text)
@@ -161,6 +229,9 @@ def parse_slickdeals_rss(xml_text: str, is_frontpage: bool = False) -> list[Deal
         if not raw_title or not link:
             continue
 
+        if query and is_accessory_mismatch(query, raw_title):
+            continue
+
         content_html = (
             item.findtext("content:encoded", default="", namespaces=ns)
             or item.findtext("description")
@@ -169,7 +240,6 @@ def parse_slickdeals_rss(xml_text: str, is_frontpage: bool = False) -> list[Deal
         tree = HTMLParser(content_html)
         desc_text = tree.text(separator=" ", strip=True) if tree.body else ""
 
-        # Extract thumbnail image from description HTML
         image: str | None = None
         for img_node in tree.css("img"):
             src = img_node.attributes.get("src") or img_node.attributes.get("data-src")
@@ -190,7 +260,14 @@ def parse_slickdeals_rss(xml_text: str, is_frontpage: bool = False) -> list[Deal
 
         coupon_match = _COUPON_RE.search(f"{raw_title} {desc_text}")
         coupon_code = coupon_match.group(1) if coupon_match else None
-        if coupon_code and coupon_code.lower() in {"with", "from", "free", "deal", "sale", "code"}:
+        if coupon_code and coupon_code.lower() in {
+            "with",
+            "from",
+            "free",
+            "deal",
+            "sale",
+            "code",
+        }:
             coupon_code = None
 
         summary = desc_text[:200].strip()
@@ -221,17 +298,21 @@ def parse_slickdeals_rss(xml_text: str, is_frontpage: bool = False) -> list[Deal
 async def fetch_slickdeals(
     query: str | None = None, mode: str = "frontpage", limit: int = 24
 ) -> list[DealItem]:
-    """Fetch live deals from Slickdeals RSS feed (frontpage, popular, or keyword search)."""
-    if query and query.strip():
-        q = quote_plus(query.strip())
+    """Fetch live deals from Slickdeals RSS feed (frontpage, popular, or title search)."""
+    clean_q = (query or "").strip()
+    if clean_q:
+        q = quote_plus(clean_q)
+        # titleonly=1 ensures we only get deals whose product title matches the query
         rss_url = (
-            f"https://slickdeals.net/newsearch.php?q={q}&searcharea=deals&searchin=first&rss=1"
+            f"https://slickdeals.net/newsearch.php?q={q}"
+            "&searcharea=deals&searchin=first&titleonly=1&rss=1"
         )
         is_fp = False
     else:
         feed_mode = "popdeals" if mode == "popular" else "frontpage"
         rss_url = (
-            f"https://slickdeals.net/newsearch.php?mode={feed_mode}&searcharea=deals&searchin=first&rss=1"
+            f"https://slickdeals.net/newsearch.php?mode={feed_mode}"
+            "&searcharea=deals&searchin=first&rss=1"
         )
         is_fp = feed_mode == "frontpage"
 
@@ -243,7 +324,7 @@ async def fetch_slickdeals(
         ) as client:
             resp = await client.get(rss_url)
             resp.raise_for_status()
-            items = parse_slickdeals_rss(resp.text, is_frontpage=is_fp)
+            items = parse_slickdeals_rss(resp.text, is_frontpage=is_fp, query=clean_q or None)
             return items[:limit]
     except Exception as exc:
         log.warning("Could not fetch Slickdeals feed (%s): %s", rss_url, exc)

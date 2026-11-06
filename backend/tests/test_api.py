@@ -44,6 +44,11 @@ def client(monkeypatch):
 
     monkeypatch.setattr(products_api, "scrape", fake_scrape)
 
+    async def fake_fetch_slickdeals(query=None, mode="frontpage", limit=20):
+        return []
+
+    monkeypatch.setattr(services_module, "fetch_slickdeals", fake_fetch_slickdeals)
+
     # Build an app that uses our test engine session.
     from fastapi import FastAPI
     from sqlmodel import Session
@@ -112,20 +117,44 @@ def test_target_notification_marks_notified(client, monkeypatch):
     assert "Test Product" in sent[0][1]
 
 
-def test_create_product_by_name_and_manual_price(client):
+def test_create_product_by_name_and_manual_price(client, monkeypatch):
+    from dealbreaker.deals import DealItem
+
+    async def fake_deals(query=None, mode="frontpage", limit=20):
+        return [
+            DealItem(
+                id="sd-1",
+                title="Sony WH-1000XM5 Headphones $278 at Amazon",
+                url="https://slickdeals.net/f/1-sony-xm5-amazon",
+                price=278.0,
+                store_name="Amazon",
+                image="https://img.example/xm5.jpg",
+            ),
+            DealItem(
+                id="sd-2",
+                title="Sony WH-1000XM5 Headphones $299 at Best Buy",
+                url="https://slickdeals.net/f/2-sony-xm5-bestbuy",
+                price=299.0,
+                store_name="Best Buy",
+            ),
+        ]
+
+    monkeypatch.setattr(services_module, "fetch_slickdeals", fake_deals)
+
     r = client.post(
         "/api/products",
         json={
             "title": "Sony WH-1000XM5",
-            "search_query": "Sony WH-1000XM5",
-            "notify_price": 250.0,
+            "notify_price": 280.0,
         },
     )
     assert r.status_code == 201, r.text
     data = r.json()
     assert data["title"] == "Sony WH-1000XM5"
-    assert data["search_query"] == "Sony WH-1000XM5"
-    assert data["notify_price"] == 250.0
+    assert data["best_price"] == 278.0
+    assert data["target_hit"] is True
+    assert set(data["store_names"]) == {"Amazon", "Best Buy"}
+    assert len(data["urls"]) == 2
 
 
 def test_price_stats_and_manual_price_update(client):
